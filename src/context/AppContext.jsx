@@ -28,7 +28,7 @@ import { auth, db } from '../firebase';
 const AppContext = createContext(null);
 
 const isRealFirebaseConfigured = () => {
-  const key = import.meta.env.VITE_FIREBASE_API_KEY;
+  const key = import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDGzfIAwgphWVEed84hVVwXgph6MHQ31mw";
   return Boolean(key && key !== 'demo-api-key');
 };
 
@@ -503,34 +503,40 @@ export function AppProvider({ children }) {
       return newGroupId;
     }
 
-    const groupRef = await addDoc(collection(db, 'groups'), {
+    const cleanGroupId = 'GRUPO-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+    const effectiveUserId = userId || auth.currentUser?.uid || user?.uid || `user-${Date.now()}`;
+
+    await setDoc(doc(db, 'groups', cleanGroupId), {
+      id: cleanGroupId,
       name: cleanGroupName,
-      createdBy: userId,
+      createdBy: effectiveUserId,
       createdAt: serverTimestamp(),
-      members: [userId],
+      members: [effectiveUserId],
     });
     
-    await setDoc(doc(db, 'users', userId), {
+    await setDoc(doc(db, 'users', effectiveUserId), {
       displayName: cleanDisplayName,
-      email: auth.currentUser?.email || '',
+      email: auth.currentUser?.email || `${cleanDisplayName.toLowerCase()}@amigos.es`,
       points: 0,
-      groupId: groupRef.id,
+      groupId: cleanGroupId,
       joinedAt: serverTimestamp(),
       avatarIndex: 0,
     });
 
-    setGroupId(groupRef.id);
+    setUser({ uid: effectiveUserId, email: `${cleanDisplayName.toLowerCase()}@amigos.es` });
+    setGroupId(cleanGroupId);
     setUserProfile({
-      id: userId,
+      id: effectiveUserId,
       displayName: cleanDisplayName,
-      email: auth.currentUser?.email || '',
+      email: `${cleanDisplayName.toLowerCase()}@amigos.es`,
       points: 0,
-      groupId: groupRef.id,
+      groupId: cleanGroupId,
       avatarIndex: 0,
     });
     setActiveTab('ranking');
+    addToast(`¡Grupo "${cleanGroupName}" creado! Código: ${cleanGroupId}`, 'success');
 
-    return groupRef.id;
+    return cleanGroupId;
   };
 
   // Join group without duplicate logins and with immediate tab redirect
@@ -613,30 +619,32 @@ export function AppProvider({ children }) {
     // Real Firebase Mode
     const groupDoc = await getDoc(doc(db, 'groups', code));
     if (!groupDoc.exists()) {
-      throw new Error('No existe ningún grupo con ese código');
+      throw new Error(`No existe ningún grupo con el código "${code}". Comprueba que esté bien escrito.`);
     }
 
     const groupData = groupDoc.data();
     const currentMemberIds = groupData.members || [];
+    const effectiveUserId = rawUserId || auth.currentUser?.uid || user?.uid || `user-${cleanDisplayName.toLowerCase().replace(/\s+/g, '')}`;
 
-    const userDocRef = doc(db, 'users', cleanUserId);
+    const userDocRef = doc(db, 'users', effectiveUserId);
     const userSnap = await getDoc(userDocRef);
 
     if (userSnap.exists()) {
       const userData = userSnap.data();
       // Already in group: avoid duplicate entry & keep existing score
       if (userData.groupId === code) {
+        setUser({ uid: effectiveUserId, email: userData.email || cleanEmail });
         setGroupId(code);
-        setUserProfile({ id: cleanUserId, ...userData });
+        setUserProfile({ id: effectiveUserId, ...userData });
         setActiveTab('ranking'); // Instant redirect to group tab
         addToast(`¡Bienvenido de nuevo, ${userData.displayName || cleanDisplayName}!`, 'info');
         return code;
       }
     }
 
-    if (!currentMemberIds.includes(cleanUserId)) {
+    if (!currentMemberIds.includes(effectiveUserId)) {
       await updateDoc(doc(db, 'groups', code), {
-        members: arrayUnion(cleanUserId),
+        members: arrayUnion(effectiveUserId),
       });
     }
 
@@ -651,8 +659,9 @@ export function AppProvider({ children }) {
 
     await setDoc(userDocRef, profileData, { merge: true });
 
+    setUser({ uid: effectiveUserId, email: profileData.email });
     setGroupId(code);
-    setUserProfile({ id: cleanUserId, ...profileData });
+    setUserProfile({ id: effectiveUserId, ...profileData });
     setActiveTab('ranking'); // Instant redirect to group tab
     addToast(`¡Te has unido al grupo ${groupData.name || code}!`, 'success');
     return code;
