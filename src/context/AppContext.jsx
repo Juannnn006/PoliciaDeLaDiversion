@@ -272,9 +272,23 @@ export function AppProvider({ children }) {
             console.warn('Firestore profile fetch error:', err.message);
           }
         } else {
-          setUser(null);
-          setUserProfile(null);
-          setGroupId(null);
+          const savedFirebaseSession = localStorage.getItem('pdd_firebase_user');
+          if (savedFirebaseSession) {
+            try {
+              const parsed = JSON.parse(savedFirebaseSession);
+              setUser({ uid: parsed.id, email: parsed.email });
+              setUserProfile(parsed);
+              setGroupId(parsed.groupId);
+            } catch {
+              setUser(null);
+              setUserProfile(null);
+              setGroupId(null);
+            }
+          } else {
+            setUser(null);
+            setUserProfile(null);
+            setGroupId(null);
+          }
         }
         setLoading(false);
       });
@@ -290,59 +304,73 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!useFirebase || !groupId) return;
 
+    // Remove orderBy from Firestore query to avoid requiring composite indexes in Firebase Console!
     const qMembers = query(
       collection(db, 'users'),
-      where('groupId', '==', groupId),
-      orderBy('points', 'desc')
+      where('groupId', '==', groupId)
     );
     const unsubMembers = onSnapshot(qMembers, (snapshot) => {
-      const membersData = snapshot.docs.map((docSnap, index) => ({
+      const membersData = snapshot.docs.map((docSnap) => ({
         id: docSnap.id,
         ...docSnap.data(),
+      }));
+      // Sort in JavaScript by points descending
+      membersData.sort((a, b) => (Number(b.points) || 0) - (Number(a.points) || 0));
+      const ranked = membersData.map((m, index) => ({
+        ...m,
         rank: index + 1,
         avatarColor: getAvatarColor(index),
       }));
-      setMembers(deduplicateMembers(membersData));
-    }, (err) => console.warn('Snapshot error:', err.message));
+      setMembers(deduplicateMembers(ranked));
+    }, (err) => console.error('Firestore Members snapshot error:', err));
 
     const qPolls = query(
       collection(db, 'polls'),
-      where('groupId', '==', groupId),
-      orderBy('createdAt', 'desc')
+      where('groupId', '==', groupId)
     );
     const unsubPolls = onSnapshot(qPolls, (snapshot) => {
       const pollsData = snapshot.docs.map(docSnap => ({
         id: docSnap.id,
         ...docSnap.data(),
       }));
+      // Sort in JavaScript by createdAt descending
+      pollsData.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || (new Date(a.createdAt || 0)).getTime();
+        const timeB = b.createdAt?.seconds || (new Date(b.createdAt || 0)).getTime();
+        return timeB - timeA;
+      });
       setPolls(pollsData);
-    }, (err) => console.warn('Polls snapshot error:', err.message));
+    }, (err) => console.error('Firestore Polls snapshot error:', err));
 
     const qActivities = query(
       collection(db, 'activities'),
-      where('groupId', '==', groupId),
-      orderBy('createdAt', 'desc')
+      where('groupId', '==', groupId)
     );
     const unsubActivities = onSnapshot(qActivities, (snapshot) => {
       const actData = snapshot.docs.map(docSnap => ({
         id: docSnap.id,
         ...docSnap.data(),
       }));
+      actData.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || (new Date(a.createdAt || 0)).getTime();
+        const timeB = b.createdAt?.seconds || (new Date(b.createdAt || 0)).getTime();
+        return timeB - timeA;
+      });
       setActivities(actData);
-    }, (err) => console.warn('Activities snapshot error:', err.message));
+    }, (err) => console.error('Firestore Activities snapshot error:', err));
 
     const qPunishments = query(
       collection(db, 'punishments'),
-      where('groupId', '==', groupId),
-      orderBy('month', 'desc')
+      where('groupId', '==', groupId)
     );
     const unsubPunishments = onSnapshot(qPunishments, (snapshot) => {
       const data = snapshot.docs.map(docSnap => ({
         id: docSnap.id,
         ...docSnap.data(),
       }));
+      data.sort((a, b) => String(b.month || '').localeCompare(String(a.month || '')));
       setPunishments(data);
-    }, (err) => console.warn('Punishments snapshot error:', err.message));
+    }, (err) => console.error('Firestore Punishments snapshot error:', err));
 
     return () => {
       unsubMembers();
@@ -455,8 +483,9 @@ export function AppProvider({ children }) {
   };
 
   const logout = async () => {
+    localStorage.removeItem('pdd_demo_user');
+    localStorage.removeItem('pdd_firebase_user');
     if (!useFirebase) {
-      localStorage.removeItem('pdd_demo_user');
       setUser(null);
       setUserProfile(null);
       setGroupId(null);
@@ -465,7 +494,11 @@ export function AppProvider({ children }) {
       return;
     }
 
-    await signOut(auth);
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.warn('Signout warning', e);
+    }
     setUser(null);
     setUserProfile(null);
     setMembers([]);
@@ -475,6 +508,7 @@ export function AppProvider({ children }) {
     setNotifications([]);
     setGroupId(null);
     setActiveTab('ranking');
+    addToast('Sesión cerrada', 'info');
   };
 
   const createGroup = async (name, userId, displayName) => {
@@ -533,6 +567,14 @@ export function AppProvider({ children }) {
       groupId: cleanGroupId,
       avatarIndex: 0,
     });
+    localStorage.setItem('pdd_firebase_user', JSON.stringify({
+      id: effectiveUserId,
+      displayName: cleanDisplayName,
+      email: `${cleanDisplayName.toLowerCase()}@amigos.es`,
+      points: 0,
+      groupId: cleanGroupId,
+      avatarIndex: 0,
+    }));
     setActiveTab('ranking');
     addToast(`¡Grupo "${cleanGroupName}" creado! Código: ${cleanGroupId}`, 'success');
 
@@ -636,6 +678,14 @@ export function AppProvider({ children }) {
         setUser({ uid: effectiveUserId, email: userData.email || cleanEmail });
         setGroupId(code);
         setUserProfile({ id: effectiveUserId, ...userData });
+        localStorage.setItem('pdd_firebase_user', JSON.stringify({
+          id: effectiveUserId,
+          displayName: userData.displayName || cleanDisplayName,
+          email: userData.email || cleanEmail,
+          points: userData.points || 0,
+          groupId: code,
+          avatarIndex: userData.avatarIndex || 0,
+        }));
         setActiveTab('ranking'); // Instant redirect to group tab
         addToast(`¡Bienvenido de nuevo, ${userData.displayName || cleanDisplayName}!`, 'info');
         return code;
@@ -662,6 +712,14 @@ export function AppProvider({ children }) {
     setUser({ uid: effectiveUserId, email: profileData.email });
     setGroupId(code);
     setUserProfile({ id: effectiveUserId, ...profileData });
+    localStorage.setItem('pdd_firebase_user', JSON.stringify({
+      id: effectiveUserId,
+      displayName: cleanDisplayName,
+      email: profileData.email,
+      points: profileData.points,
+      groupId: code,
+      avatarIndex: profileData.avatarIndex,
+    }));
     setActiveTab('ranking'); // Instant redirect to group tab
     addToast(`¡Te has unido al grupo ${groupData.name || code}!`, 'success');
     return code;
