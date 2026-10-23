@@ -225,6 +225,10 @@ export function AppProvider({ children }) {
         setUser({ uid: u.id, email: u.email });
         setUserProfile(u);
         setGroupId(u.groupId);
+        if (u.groupId && u.groupId !== 'DIVERSION-DEMO') {
+          const groupMembers = loadedMembers.filter(m => m.groupId === u.groupId);
+          setMembers(groupMembers.length > 0 ? groupMembers : [u]);
+        }
       }
     } catch {
       setMembers(INITIAL_DEMO_MEMBERS);
@@ -541,7 +545,19 @@ export function AppProvider({ children }) {
     const cleanUserId = rawUserId || user?.uid || `user-${cleanDisplayName.toLowerCase().replace(/\s+/g, '')}`;
 
     if (!useFirebase) {
-      let currentMembers = deduplicateMembers(members.length > 0 ? members : INITIAL_DEMO_MEMBERS);
+      const isDemoGroup = code === 'DIVERSION-DEMO';
+      
+      let storedAll = [];
+      try {
+        const raw = localStorage.getItem('pdd_demo_members');
+        if (raw) storedAll = JSON.parse(raw);
+      } catch (e) {
+        console.warn('Storage read error', e);
+      }
+
+      let currentMembers = isDemoGroup 
+        ? deduplicateMembers(members.length > 0 ? members : INITIAL_DEMO_MEMBERS)
+        : deduplicateMembers(storedAll.filter(m => m.groupId === code));
 
       // Check if this member is ALREADY in the group (avoiding duplicate logins!)
       const existingMember = currentMembers.find(m => 
@@ -556,9 +572,10 @@ export function AppProvider({ children }) {
         setUser({ uid: existingMember.id, email: existingMember.email });
         setUserProfile(updatedProfile);
         setGroupId(code);
+        setMembers(currentMembers);
         setActiveTab('ranking'); // Instant redirect to group tab
         localStorage.setItem('pdd_demo_user', JSON.stringify(updatedProfile));
-        addToast(`¡Bienvenido de nuevo, ${existingMember.displayName}! Redirigiendo a tu grupo...`, 'info');
+        addToast(`¡Bienvenido de nuevo, ${existingMember.displayName}!`, 'info');
         return code;
       }
 
@@ -572,15 +589,22 @@ export function AppProvider({ children }) {
         avatarIndex: currentMembers.length,
       };
 
-      const updatedMembers = deduplicateMembers([...currentMembers, newMember]);
-      updatedMembers.sort((a, b) => b.points - a.points);
-      setMembers(updatedMembers);
+      const updatedGroupMembers = deduplicateMembers([...currentMembers, newMember]);
+      updatedGroupMembers.sort((a, b) => b.points - a.points);
+      
+      // Update global members list in storage
+      const otherGroupMembers = storedAll.filter(m => m.groupId !== code);
+      const allMembersToSave = isDemoGroup 
+        ? updatedGroupMembers 
+        : deduplicateMembers([...otherGroupMembers, ...updatedGroupMembers]);
+
+      setMembers(updatedGroupMembers);
       setUser({ uid: newMember.id, email: newMember.email });
       setUserProfile(newMember);
       setGroupId(code);
       setActiveTab('ranking'); // Instant redirect to group tab
       localStorage.setItem('pdd_demo_user', JSON.stringify(newMember));
-      saveDemoState(updatedMembers);
+      saveDemoState(allMembersToSave);
 
       addToast(`¡Te has unido al grupo ${code}!`, 'success');
       return code;
